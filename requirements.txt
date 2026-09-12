@@ -1,0 +1,16 @@
+numpy
+scipy
+matplotlib
+PyQt6
+sounddevice
+
+# Note: sounddevice needs the PortAudio system library to actually open
+# an audio stream (Phase 7, live microphone capture). pip installs the
+# Python bindings, but the native library is a separate OS package:
+#   - Windows / macOS: PortAudio ships bundled inside the sounddevice
+#     wheel, so `pip install sounddevice` is normally enough.
+#   - Linux: install it separately, e.g. on Debian/Ubuntu:
+#       sudo apt-get install libportaudio2
+#     Without it, `import sounddevice` raises OSError immediately - this
+#     app still runs fine in that case (WAV file decoding is unaffected),
+#     it just shows a clear error if you click "Start Microphone".
