@@ -87,7 +87,7 @@ from core.config import (
 )
 from core.morse_decoder import decode_letter
 
-
+#bandpass
 def _bandpass_sos(sample_rate: float, center_hz: float, bandwidth_hz: float, order: int = 4):
     nyquist = sample_rate / 2.0
     low = max(1.0, center_hz - bandwidth_hz / 2.0) / nyquist
