@@ -2,6 +2,7 @@ numpy
 scipy
 matplotlib
 PyQt6
+PyQt6-Qt6
 sounddevice
 
 # Note: sounddevice needs the PortAudio system library to actually open
@@ -14,3 +15,10 @@ sounddevice
 #     Without it, `import sounddevice` raises OSError immediately - this
 #     app still runs fine in that case (WAV file decoding is unaffected),
 #     it just shows a clear error if you click "Start Microphone".
+#
+# Note: "Simulate from File" audio playback uses PyQt6.QtMultimedia,
+# which ships as part of the main PyQt6 wheel on most platforms (the
+# explicit PyQt6-Qt6 line above just makes sure its native Qt libraries
+# are present). If it's unavailable for any reason, the app detects this
+# and simply skips audio playback - simulation and decoding are
+# completely unaffected either way.

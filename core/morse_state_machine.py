@@ -192,6 +192,29 @@ def estimate_unit_seconds(runs: List[Run], fallback_wpm: float = DEFAULT_WPM) ->
     we fall back to the shortest "on" duration, since a dot is more
     likely to have been sent than assuming every symbol was a dash.
 
+    Robustness against noise glitches: a single leftover glitch that
+    barely survives debouncing could otherwise get isolated as its own
+    tiny "dot cluster" (just that one point), anchoring the unit
+    estimate at a bogus microsecond-scale value and corrupting every
+    real dot/dash classification downstream. We guard against this by
+    checking the *size* of the cluster a split would isolate: a
+    genuine dot cluster should make up a reasonable share of the pulses
+    seen, not just one or two stray points. If a split isolates only a
+    tiny minority, those points are dropped as likely glitches and the
+    search retries on what remains.
+
+    This is checked by relative cluster size, not by comparing raw
+    durations against the overall median - an earlier version of this
+    function did the latter, which works fine when dots outnumber
+    dashes but silently breaks otherwise: with more dashes than dots
+    (easy to hit - digits and letters like O/W/G/M/K/Y are dash-heavy),
+    the median itself shifts into dash-length territory, and the
+    *entire real dot cluster* would get rejected as "outliers" instead
+    of just the glitches. Sizing the check relative to the cluster
+    itself, rather than to a global statistic that shifts with the
+    dot/dash mix, avoids that failure mode regardless of which symbol
+    happens to be more common in a given message.
+
     If there are no "on" runs at all, we fall back to a unit derived
     from `fallback_wpm` using the standard PARIS timing formula, so the
     function always returns something usable.
@@ -211,41 +234,48 @@ def estimate_unit_seconds(runs: List[Run], fallback_wpm: float = DEFAULT_WPM) ->
     if len(on_durations) == 1:
         return on_durations[0]
 
-    # Robustness: reject extreme outliers - durations far shorter than
-    # the typical pulse - before searching for the dot/dash cluster
-    # split. Without this, a single leftover noise glitch that barely
-    # survives debouncing (e.g. just above the minimum pulse duration)
-    # can anchor the *entire* unit estimate at an artificially tiny
-    # value, which then corrupts the classification of every real dot
-    # and dash in the message (they all look enormously long relative to
-    # a bogus microsecond-scale "unit"). The median is a safe reference
-    # point here since it's unaffected by a small number of outliers on
-    # either side.
-    median_duration = on_durations[len(on_durations) // 2]
-    candidates = [d for d in on_durations if d >= median_duration * 0.35]
-    if not candidates:
-        candidates = on_durations
+    durations = on_durations
 
-    best_gap_ratio = 1.0
-    best_split_index = None  # dot cluster is candidates[:split_index + 1]
+    # Up to two passes: search for the dot/dash split; if the low
+    # cluster it finds is too small a share of the data to trust as a
+    # real dot population, drop it as noise and search again on what's
+    # left. Bounded at two passes since each pass strictly shrinks the
+    # data, and two is enough to recover from a small number of glitches
+    # without risking discarding a message that's genuinely almost all
+    # dashes.
+    for _ in range(2):
+        best_gap_ratio = 1.0
+        best_split_index = None  # dot cluster is durations[:split_index + 1]
 
-    for i in range(len(candidates) - 1):
-        a, b = candidates[i], candidates[i + 1]
-        if a <= 0:
-            continue
-        ratio = b / a
-        if ratio > best_gap_ratio:
-            best_gap_ratio = ratio
-            best_split_index = i
+        for i in range(len(durations) - 1):
+            a, b = durations[i], durations[i + 1]
+            if a <= 0:
+                continue
+            ratio = b / a
+            if ratio > best_gap_ratio:
+                best_gap_ratio = ratio
+                best_split_index = i
 
-    # A real dot/dash split should look like roughly a 3x jump; require
-    # a moderate ratio so we don't split on ordinary noise/jitter.
-    if best_split_index is not None and best_gap_ratio > 1.8:
-        dot_cluster = candidates[: best_split_index + 1]
-        return sum(dot_cluster) / len(dot_cluster)
+        # A real dot/dash split should look like roughly a 3x jump;
+        # require a moderate ratio so we don't split on ordinary
+        # noise/jitter.
+        if best_split_index is None or best_gap_ratio <= 1.8:
+            return durations[0]  # no clear split -> shortest pulse is our best guess at a dot
 
-    # No clear split -> assume the shortest (non-outlier) pulse observed is a dot.
-    return candidates[0]
+        cluster_size = best_split_index + 1
+        min_expected = max(2, round(len(durations) * 0.15))
+
+        if cluster_size >= min_expected or cluster_size == len(durations):
+            dot_cluster = durations[:cluster_size]
+            return sum(dot_cluster) / len(dot_cluster)
+
+        # This low cluster is too small a share to trust as real dots -
+        # treat it as noise glitches, drop it, and retry on the rest.
+        durations = durations[cluster_size:]
+        if len(durations) <= 1:
+            break
+
+    return durations[0]
 
 
 def classify_runs(runs: List[Run], unit_seconds: float) -> str:

@@ -22,6 +22,7 @@ COLORS = {
     "on_background": "#FFFFFF",     # primary text
     "on_surface_variant": "#B8B8C0",# secondary/muted text
     "error": "#FF5449",
+    "warning": "#FFB020",           # amber, for marginal (non-fatal) quality warnings
 }
 
 

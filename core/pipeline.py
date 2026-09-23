@@ -39,9 +39,118 @@ from core.config import (
     MIN_PULSE_MS,
 )
 from core.signal_processing import analyze
-from core.morse_state_machine import signal_to_morse
+from core.morse_state_machine import signal_to_morse, encode_runs
 from core.morse_decoder import decode_morse
 from core.signal_processing import detect_dominant_frequency
+
+
+def assess_signal_quality(envelope: np.ndarray, sample_rate: int, threshold: float) -> dict:
+    """
+    Estimate how reliably this recording can be decoded, by measuring
+    how much the envelope actually drops during the *specific* silent
+    gaps that matter for decoding - the ones between individual dots and
+    dashes within the message - as opposed to the recording's overall
+    silence level.
+
+    This distinction matters in practice: a recording can contain long
+    genuine silent stretches (before the message starts, after it ends,
+    between words) that make a naive whole-recording "how quiet is the
+    quietest part" measurement look fine, while the much shorter gaps
+    *within* a letter never actually return close to silence - e.g.
+    because of microphone auto-gain-control, room reverb, or a decaying
+    tone source. Those are exactly the gaps the decoder depends on to
+    tell dots and dashes apart, so this measures them directly rather
+    than the recording as a whole.
+
+    Method: build the actual run structure (same code path as normal
+    decoding), then compare the typical "tone" run's envelope level
+    against the *worse* end of the "gap" runs' envelope levels (75th
+    percentile, not the median) - a decode is only as reliable as its
+    worst-separated boundary, since even one badly-collapsed gap can
+    merge two symbols together and throw off everything after it.
+
+    Args:
+        envelope: output of compute_envelope().
+        sample_rate: samples per second (needed to build runs).
+        threshold: the numeric threshold used for binarize(), so mean
+            envelope levels can be looked up per-run.
+
+    Returns:
+        dict with:
+            contrast_ratio - float, or None if there's no internal gap
+                or no tone at all to compare (e.g. a recording that's
+                either one continuous tone or entirely silent).
+            quality        - "good", "marginal", or "poor" (str)
+            message        - short, human-readable explanation, meant
+                              for direct display in the UI.
+    """
+    from core.signal_processing import binarize
+    binary = binarize(envelope, threshold)
+
+    # Run objects only store duration + tone/silence, not absolute
+    # position, so recompute each run's actual sample range by walking
+    # the run-length encoding with a cursor. Only the *internal* gaps -
+    # between the first and last tone run - are relevant here; leading/
+    # trailing silence (before the message starts, after it ends) is
+    # excluded exactly like trim_silence() does, so it can't dilute the
+    # measurement of the gaps that actually matter for decoding.
+    all_runs = encode_runs(binary, sample_rate)
+    tone_indices = [i for i, r in enumerate(all_runs) if r.is_tone]
+
+    if not tone_indices:
+        return {
+            "contrast_ratio": None,
+            "quality": "poor",
+            "message": "No tone detected at all in this recording.",
+        }
+
+    first_tone_idx, last_tone_idx = tone_indices[0], tone_indices[-1]
+
+    tone_means, gap_means = [], []
+    cursor = 0
+    for i, r in enumerate(all_runs):
+        n = int(round(r.duration_seconds * sample_rate))
+        if first_tone_idx <= i <= last_tone_idx:
+            segment = envelope[cursor:cursor + n]
+            if segment.size:
+                (tone_means if r.is_tone else gap_means).append(float(segment.mean()))
+        cursor += n
+
+    if not tone_means or not gap_means:
+        return {
+            "contrast_ratio": None,
+            "quality": "marginal",
+            "message": "Not enough on/off structure detected to assess recording quality.",
+        }
+
+    typical_tone = float(np.median(tone_means))
+    worst_gap = float(np.percentile(gap_means, 75))
+    contrast_ratio = typical_tone / worst_gap if worst_gap > 0 else float("inf")
+
+    if contrast_ratio >= 6.0:
+        quality = "good"
+        message = f"Clear separation between tone and silence (contrast {contrast_ratio:.1f}x)."
+    elif contrast_ratio >= 2.5:
+        quality = "marginal"
+        message = (
+            f"Weak separation between tone and silence within the message "
+            f"(contrast {contrast_ratio:.1f}x) - decoding may be unreliable, "
+            "especially for quick repeated symbols. This usually means "
+            "background noise/reverb doesn't fully drop away between "
+            "beeps, not that the recording is too quiet."
+        )
+    else:
+        quality = "poor"
+        message = (
+            f"Silence between beeps within the message isn't dropping much "
+            f"below the tone level (contrast only {contrast_ratio:.1f}x) - "
+            "decoding is likely to be unreliable regardless of tuning. This "
+            "is usually caused by mic auto-gain-control/noise suppression "
+            "(common on Bluetooth headsets), room reverb, or a slowly-decaying "
+            "tone source - not low volume."
+        )
+
+    return {"contrast_ratio": contrast_ratio, "quality": quality, "message": message}
 
 
 def _decode_buffer(buffer: AudioBuffer, window_ms: float, threshold_ratio: float,
@@ -73,6 +182,7 @@ def _decode_buffer(buffer: AudioBuffer, window_ms: float, threshold_ratio: float
         locked_unit_seconds=locked_unit_seconds,
     )
     text = decode_morse(phase3["morse"])
+    quality = assess_signal_quality(phase2["envelope"], buffer.sample_rate, phase2["threshold"])
 
     return {
         "text": text,
@@ -83,6 +193,7 @@ def _decode_buffer(buffer: AudioBuffer, window_ms: float, threshold_ratio: float
         "samples": buffer.samples,
         "envelope": phase2["envelope"],
         "threshold": phase2["threshold"],
+        "quality": quality,
     }
 
 
