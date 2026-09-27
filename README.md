@@ -8,6 +8,7 @@ the GUI.
 
 ## Features
 
+- **Signals & Systems Theory Guide**: See [`SIGNALS_THEORY.md`](SIGNALS_THEORY.md) for a detailed breakdown of how course topics (Sampling, Band-pass Filtering, Convolution, FFT, Hysteresis, State Machine) are applied.
 - **Load a `.wav` file** and decode it to text.
 - **Simulate live input from a file** (replays a `.wav` chunk-by-chunk in
   real time) - useful for demos and for testing the live pipeline without
